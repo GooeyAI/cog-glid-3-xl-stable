@@ -1,12 +1,14 @@
 # Prediction interface for Cog ⚙️
 # https://github.com/replicate/cog/blob/main/docs/python.md
-
+import os
 import shutil
 import subprocess
 import sys
 import typing
 
 from cog import BasePredictor, Input, Path
+
+os.environ["TRANSFORMERS_CACHE"] = "transformers_cache"
 
 
 class Predictor(BasePredictor):
@@ -40,24 +42,24 @@ class Predictor(BasePredictor):
         shutil.rmtree("output", ignore_errors=True)
         shutil.rmtree("output_npy", ignore_errors=True)
 
-        subprocess.check_call(
-            [
-                sys.executable,
-                "sample.py",
-                "--model_path",
-                "inpaint.pt",
-                "--edit",
-                str(edit_image),
-                "--mask",
-                str(mask),
-                "--steps",
-                str(num_inference_steps),
-                "--text",
-                prompt,
-                "--num_batches",
-                str(num_outputs),
-            ],
-            env={"TRANSFORMERS_CACHE": "transformers_cache"},
-        )
+        cmd = [
+            sys.executable,
+            "sample.py",
+            "--model_path",
+            "inpaint.pt",
+            "--edit",
+            str(edit_image),
+            "--mask",
+            str(mask),
+            "--steps",
+            str(num_inference_steps),
+            "--text",
+            prompt,
+            "--num_batches",
+            str(num_outputs),
+        ]
+
+        print("$ " + " ".join(map(str, cmd)))
+        subprocess.check_call(cmd)
 
         return [Path(outfile) for outfile in Path("output").glob("*.png")]
