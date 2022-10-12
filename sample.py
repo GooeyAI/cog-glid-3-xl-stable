@@ -597,7 +597,7 @@ def do_run(args, model, model_config, device, ldm, classifier, clip_tokenizer, c
             save_sample(i, sample['pred_xstart'][:args.batch_size])
 
 if __name__ == '__main__':
-    gc.collect()
     args = parser.parse_args()
     params = do_load(args)
+    gc.collect()
     do_run(args, *params)
