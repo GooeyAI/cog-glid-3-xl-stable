@@ -7,13 +7,18 @@ import sys
 import typing
 
 from cog import BasePredictor, Input, Path
+import sample
 
 os.environ["TRANSFORMERS_CACHE"] = "transformers_cache"
 
 
 class Predictor(BasePredictor):
+    script_models = None
+
     def setup(self):
-        pass
+        self.script_models = sample.do_load(
+            sample.parser.parse_args(["--model_path", "inpaint.pt"])
+        )
 
     def predict(
         self,
@@ -42,24 +47,24 @@ class Predictor(BasePredictor):
         shutil.rmtree("output", ignore_errors=True)
         shutil.rmtree("output_npy", ignore_errors=True)
 
-        cmd = [
-            sys.executable,
-            "sample.py",
-            "--model_path",
-            "inpaint.pt",
-            "--edit",
-            str(edit_image),
-            "--mask",
-            str(mask),
-            "--steps",
-            str(num_inference_steps),
-            "--text",
-            prompt,
-            "--num_batches",
-            str(num_outputs),
-        ]
-
-        print("$ " + " ".join(map(str, cmd)))
-        subprocess.check_call(cmd)
+        sample.do_run(
+            sample.parser.parse_args(
+                [
+                    "--model_path",
+                    "inpaint.pt",
+                    "--edit",
+                    str(edit_image),
+                    "--mask",
+                    str(mask),
+                    "--steps",
+                    str(num_inference_steps),
+                    "--text",
+                    prompt,
+                    "--num_batches",
+                    str(num_outputs),
+                ]
+            ),
+            *self.script_models,
+        )
 
         return [Path(outfile) for outfile in Path("output").glob("*.png")]

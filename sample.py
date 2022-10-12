@@ -16,7 +16,8 @@ from tqdm.notebook import tqdm
 
 import numpy as np
 
-from guided_diffusion.script_util import create_model_and_diffusion, model_and_diffusion_defaults, classifier_defaults, create_classifier
+from guided_diffusion.script_util import create_model_and_diffusion, model_and_diffusion_defaults, classifier_defaults, \
+    create_classifier, create_model, create_gaussian_diffusion
 
 from omegaconf import OmegaConf
 from ldm.util import instantiate_from_config
@@ -98,173 +99,214 @@ parser.add_argument('--ddim', dest='ddim', action='store_true')
 
 parser.add_argument('--ddpm', dest='ddpm', action='store_true')
 
-args = parser.parse_args()
-
-if args.edit and not args.mask:
-    from PyQt5.QtWidgets import QApplication, QMainWindow
-    from PyQt5.QtGui import QPainter, QPen
-    from PyQt5.QtCore import Qt, QPoint, QRect, QBuffer
-    import PyQt5.QtGui as QtGui
-
-    class Draw(QMainWindow):
-
-        def __init__(self, width, height, im):
-            super().__init__()
-            self.drawing = False
-            self.lastPoint = QPoint()
-
-            self.qim = QtGui.QImage(im.tobytes("raw","RGB"), im.width, im.height, QtGui.QImage.Format_RGB888)
-            self.image = QtGui.QPixmap.fromImage(self.qim)
-
-            canvas = QtGui.QImage(im.width, im.height, QtGui.QImage.Format_ARGB32)
-            self.canvas = QtGui.QPixmap.fromImage(canvas)
-            self.canvas.fill(Qt.transparent)
-
-            self.setGeometry(0, 0, im.width, im.height)
-            self.resize(self.image.width(), self.image.height())
-            self.show()
-
-        def paintEvent(self, event):
-            painter = QPainter(self)
-            painter.drawPixmap(QRect(0, 0, self.image.width(), self.image.height()), self.image)
-            painter.drawPixmap(QRect(0, 0, self.canvas.width(), self.canvas.height()), self.canvas)
-
-        def mousePressEvent(self, event):
-            if event.button() == Qt.LeftButton:
-                self.drawing = True
-                self.lastPoint = event.pos()
-
-        def mouseMoveEvent(self, event):
-            if event.buttons() and Qt.LeftButton and self.drawing:
-                painter = QPainter(self.canvas)
-                painter.setPen(QPen(Qt.red, (self.width()+self.height())/20, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-                painter.drawLine(self.lastPoint, event.pos())
-                self.lastPoint = event.pos()
-                self.update()
-
-        def mouseReleaseEvent(self, event):
-            if event.button == Qt.LeftButton:
-                self.drawing = False
-
-        def getCanvas(self):
-            image = self.canvas.toImage()
-            buffer = QBuffer()
-            buffer.open(QBuffer.ReadWrite)
-            image.save(buffer, "PNG")
-            pil_im = Image.open(io.BytesIO(buffer.data()))
-            return pil_im
-
-        def resizeEvent(self, event):
-            self.image = QtGui.QPixmap.fromImage(self.qim)
-            self.image = self.image.scaled(self.width(), self.height())
-
-            canvas = QtGui.QImage(self.width(), self.height(), QtGui.QImage.Format_ARGB32)
-            self.canvas = QtGui.QPixmap.fromImage(canvas)
-            self.canvas.fill(Qt.transparent)
-
-def fetch(url_or_path):
-    if str(url_or_path).startswith('http://') or str(url_or_path).startswith('https://'):
-        r = requests.get(url_or_path)
-        r.raise_for_status()
-        fd = io.BytesIO()
-        fd.write(r.content)
-        fd.seek(0)
-        return fd
-    return open(url_or_path, 'rb')
-
-device = torch.device('cuda:0' if (torch.cuda.is_available() and not args.cpu) else 'cpu')
-print('Using device:', device)
-
-model_state_dict = torch.load(args.model_path, map_location='cpu')
-
-model_params = {
-    'attention_resolutions': '32,16,8',
-    'class_cond': False,
-    'diffusion_steps': 1000,
-    'rescale_timesteps': True,
-    'timestep_respacing': '50',
-    'image_size': 32,
-    'learn_sigma': False,
-    'noise_schedule': 'linear',
-    'num_channels': 320,
-    'num_heads': 8,
-    'num_res_blocks': 2,
-    'resblock_updown': False,
-    'use_fp16': False,
-    'use_scale_shift_norm': False,
-    'clip_embed_dim': None,
-    'image_condition': True if model_state_dict['input_blocks.0.0.weight'].shape[1] == 8 else False,
-    'super_res_condition': True if 'external_block.0.0.weight' in model_state_dict else False,
-}
-
-if args.ddpm:
-    model_params['timestep_respacing'] = '1000'
-if args.ddim:
-    if args.steps:
-        model_params['timestep_respacing'] = 'ddim'+str(args.steps)
-    else:
-        model_params['timestep_respacing'] = 'ddim250'
-elif args.steps:
-    model_params['timestep_respacing'] = str(args.steps)
-
-model_config = model_and_diffusion_defaults()
-model_config.update(model_params)
-
-if args.cpu:
-    model_config['use_fp16'] = False
-
-# Create output folders
-os.makedirs("output", exist_ok = True)
-os.makedirs("output_npy", exist_ok = True)
-    
-# Load models
-model, diffusion = create_model_and_diffusion(**model_config)
-model.load_state_dict(model_state_dict, strict=True)
-model.requires_grad_(False).eval().to(device)
-
-if model_config['use_fp16']:
-    model.convert_to_fp16()
-else:
-    model.convert_to_fp32()
 
 def set_requires_grad(model, value):
     for param in model.parameters():
         param.requires_grad = value
 
-# load classifier
-if args.classifier:
-    classifier_config = classifier_defaults()
-    classifier_config['classifier_width'] = 128
-    classifier_config['classifier_depth'] = 4
-    classifier_config['classifier_attention_resolutions'] = '64,32,16,8'
-    classifier = create_classifier(**classifier_config)
-    classifier.load_state_dict(
-        torch.load(args.classifier, map_location="cpu")
+
+def do_load(args):
+    device = torch.device('cuda:0' if (torch.cuda.is_available() and not args.cpu) else 'cpu')
+
+    model_state_dict = torch.load(args.model_path, map_location='cpu')
+
+    model_config = model_and_diffusion_defaults()
+    model_config.update({
+        'attention_resolutions': '32,16,8',
+        'class_cond': False,
+        'diffusion_steps': 1000,
+        'rescale_timesteps': True,
+        'timestep_respacing': '50',
+        'image_size': 32,
+        'learn_sigma': False,
+        'noise_schedule': 'linear',
+        'num_channels': 320,
+        'num_heads': 8,
+        'num_res_blocks': 2,
+        'resblock_updown': False,
+        'use_fp16': False,
+        'use_scale_shift_norm': False,
+        'clip_embed_dim': None,
+        'image_condition': True if model_state_dict['input_blocks.0.0.weight'].shape[1] == 8 else False,
+        'super_res_condition': True if 'external_block.0.0.weight' in model_state_dict else False,
+    })
+
+    if args.cpu:
+        model_config['use_fp16'] = False
+
+    model = create_model(
+        image_size=model_config["image_size"],
+        num_channels=model_config["num_channels"],
+        num_res_blocks=model_config["num_res_blocks"],
+        channel_mult=model_config["channel_mult"],
+        learn_sigma=model_config["learn_sigma"],
+        class_cond=model_config["class_cond"],
+        use_checkpoint=model_config["use_checkpoint"],
+        attention_resolutions=model_config["attention_resolutions"],
+        num_heads=model_config["num_heads"],
+        num_head_channels=model_config["num_head_channels"],
+        num_heads_upsample=model_config["num_heads_upsample"],
+        use_scale_shift_norm=model_config["use_scale_shift_norm"],
+        dropout=model_config["dropout"],
+        resblock_updown=model_config["resblock_updown"],
+        use_fp16=model_config["use_fp16"],
+        use_spatial_transformer=model_config["use_spatial_transformer"],
+        context_dim=model_config["context_dim"],
+        clip_embed_dim=model_config["clip_embed_dim"],
+        image_condition=model_config["image_condition"],
+        super_res_condition=model_config["super_res_condition"],
     )
-    classifier.to(device)
-    classifier.convert_to_fp16()
-    classifier.eval()
+    model.load_state_dict(model_state_dict, strict=True)
+    model.requires_grad_(False).eval().to(device)
 
-# vae
-kl_config = OmegaConf.load('kl.yaml')
-kl_sd = torch.load(args.kl_path, map_location="cpu")
+    if model_config['use_fp16']:
+        model.convert_to_fp16()
+    else:
+        model.convert_to_fp32()
 
-ldm = instantiate_from_config(kl_config.model)
-ldm.load_state_dict(kl_sd, strict=True)
+    classifier = None
 
-ldm.to(device)
-ldm.eval()
-ldm.requires_grad_(False)
-set_requires_grad(ldm, False)
+    def set_requires_grad(model, value):
+        for param in model.parameters():
+            param.requires_grad = value
 
-# clip
-clip_version = 'openai/clip-vit-large-patch14'
-clip_tokenizer = CLIPTokenizer.from_pretrained(clip_version)
-clip_transformer = CLIPTextModel.from_pretrained(clip_version)
-clip_transformer.eval().requires_grad_(False).to(device)
+    # load classifier
+    if args.classifier:
+        classifier_config = classifier_defaults()
+        classifier_config['classifier_width'] = 128
+        classifier_config['classifier_depth'] = 4
+        classifier_config['classifier_attention_resolutions'] = '64,32,16,8'
+        classifier = create_classifier(**classifier_config)
+        classifier.load_state_dict(
+            torch.load(args.classifier, map_location="cpu")
+        )
+        classifier.to(device)
+        classifier.convert_to_fp16()
+        classifier.eval()
+
+    # vae
+    kl_config = OmegaConf.load('kl.yaml')
+    kl_sd = torch.load(args.kl_path, map_location="cpu")
+
+    ldm = instantiate_from_config(kl_config.model)
+    ldm.load_state_dict(kl_sd, strict=True)
+
+    ldm.to(device)
+    ldm.eval()
+    ldm.requires_grad_(False)
+    set_requires_grad(ldm, False)
+
+    # clip
+    clip_version = 'openai/clip-vit-large-patch14'
+    clip_tokenizer = CLIPTokenizer.from_pretrained(clip_version)
+    clip_transformer = CLIPTextModel.from_pretrained(clip_version)
+    clip_transformer.eval().requires_grad_(False).to(device)
+
+    return model, model_config, device, ldm, classifier, clip_tokenizer, clip_transformer
 
 
-def do_run():
+def do_run(args, model, model_config, device, ldm, classifier, clip_tokenizer, clip_transformer):
+    if args.edit and not args.mask:
+        from PyQt5.QtWidgets import QApplication, QMainWindow
+        from PyQt5.QtGui import QPainter, QPen
+        from PyQt5.QtCore import Qt, QPoint, QRect, QBuffer
+        import PyQt5.QtGui as QtGui
+
+        class Draw(QMainWindow):
+
+            def __init__(self, width, height, im):
+                super().__init__()
+                self.drawing = False
+                self.lastPoint = QPoint()
+
+                self.qim = QtGui.QImage(im.tobytes("raw", "RGB"), im.width, im.height, QtGui.QImage.Format_RGB888)
+                self.image = QtGui.QPixmap.fromImage(self.qim)
+
+                canvas = QtGui.QImage(im.width, im.height, QtGui.QImage.Format_ARGB32)
+                self.canvas = QtGui.QPixmap.fromImage(canvas)
+                self.canvas.fill(Qt.transparent)
+
+                self.setGeometry(0, 0, im.width, im.height)
+                self.resize(self.image.width(), self.image.height())
+                self.show()
+
+            def paintEvent(self, event):
+                painter = QPainter(self)
+                painter.drawPixmap(QRect(0, 0, self.image.width(), self.image.height()), self.image)
+                painter.drawPixmap(QRect(0, 0, self.canvas.width(), self.canvas.height()), self.canvas)
+
+            def mousePressEvent(self, event):
+                if event.button() == Qt.LeftButton:
+                    self.drawing = True
+                    self.lastPoint = event.pos()
+
+            def mouseMoveEvent(self, event):
+                if event.buttons() and Qt.LeftButton and self.drawing:
+                    painter = QPainter(self.canvas)
+                    painter.setPen(
+                        QPen(Qt.red, (self.width() + self.height()) / 20, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                    painter.drawLine(self.lastPoint, event.pos())
+                    self.lastPoint = event.pos()
+                    self.update()
+
+            def mouseReleaseEvent(self, event):
+                if event.button == Qt.LeftButton:
+                    self.drawing = False
+
+            def getCanvas(self):
+                image = self.canvas.toImage()
+                buffer = QBuffer()
+                buffer.open(QBuffer.ReadWrite)
+                image.save(buffer, "PNG")
+                pil_im = Image.open(io.BytesIO(buffer.data()))
+                return pil_im
+
+            def resizeEvent(self, event):
+                self.image = QtGui.QPixmap.fromImage(self.qim)
+                self.image = self.image.scaled(self.width(), self.height())
+
+                canvas = QtGui.QImage(self.width(), self.height(), QtGui.QImage.Format_ARGB32)
+                self.canvas = QtGui.QPixmap.fromImage(canvas)
+                self.canvas.fill(Qt.transparent)
+
+    def fetch(url_or_path):
+        if str(url_or_path).startswith('http://') or str(url_or_path).startswith('https://'):
+            r = requests.get(url_or_path)
+            r.raise_for_status()
+            fd = io.BytesIO()
+            fd.write(r.content)
+            fd.seek(0)
+            return fd
+        return open(url_or_path, 'rb')
+
+    print('Using device:', device)
+
+    if args.ddpm:
+        model_config['timestep_respacing'] = '1000'
+    if args.ddim:
+        if args.steps:
+            model_config['timestep_respacing'] = 'ddim'+str(args.steps)
+        else:
+            model_config['timestep_respacing'] = 'ddim250'
+    elif args.steps:
+        model_config['timestep_respacing'] = str(args.steps)
+
+    # Create output folders
+    os.makedirs("output", exist_ok = True)
+    os.makedirs("output_npy", exist_ok = True)
+
+    # Load models
+    diffusion = create_gaussian_diffusion(
+        steps=model_config['diffusion_steps'],
+        learn_sigma=model_config['learn_sigma'],
+        noise_schedule=model_config['noise_schedule'],
+        use_kl=model_config['use_kl'],
+        predict_xstart=model_config['predict_xstart'],
+        rescale_timesteps=model_config['rescale_timesteps'],
+        rescale_learned_sigmas=model_config['rescale_learned_sigmas'],
+        timestep_respacing=model_config['timestep_respacing'],
+    )
+
     if args.seed >= 0:
         torch.manual_seed(args.seed)
 
@@ -405,7 +447,7 @@ def do_run():
                 return torch.autograd.grad(selected.sum(), x_in)[0] * args.classifier_scale
 
     cur_t = None
- 
+
     if args.ddpm:
         sample_fn = diffusion.ddpm_sample_loop_progressive
     elif args.ddim:
@@ -424,9 +466,9 @@ def do_run():
                 np.save(outfile, image_scaled.detach().cpu().numpy())
 
             out = TF.to_pil_image(out.squeeze(0).add(1).div(2).clamp(0, 1))
-            
+
             if square is not None:
-                outdraw = ImageDraw.Draw(out)  
+                outdraw = ImageDraw.Draw(out)
                 outdraw.rectangle([(square[0]*8, square[1]*8),(square[0]*8+512, square[1]*8+512)], fill=None, outline ="red")
 
             filename = f'output/{args.prefix}{i * args.batch_size + k:05}.png'
@@ -554,5 +596,8 @@ def do_run():
 
             save_sample(i, sample['pred_xstart'][:args.batch_size])
 
-gc.collect()
-do_run()
+if __name__ == '__main__':
+    gc.collect()
+    args = parser.parse_args()
+    params = do_load(args)
+    do_run(args, *params)
