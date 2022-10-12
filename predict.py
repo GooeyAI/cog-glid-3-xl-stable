@@ -1,12 +1,12 @@
 # Prediction interface for Cog ⚙️
 # https://github.com/replicate/cog/blob/main/docs/python.md
+import gc
 import os
 import shutil
-import subprocess
-import sys
 import typing
 
 from cog import BasePredictor, Input, Path
+
 import sample
 
 os.environ["TRANSFORMERS_CACHE"] = "transformers_cache"
@@ -47,6 +47,7 @@ class Predictor(BasePredictor):
         shutil.rmtree("output", ignore_errors=True)
         shutil.rmtree("output_npy", ignore_errors=True)
 
+        gc.collect()
         sample.do_run(
             sample.parser.parse_args(
                 [
