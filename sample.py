@@ -414,7 +414,7 @@ def do_run(args, model, model_config, device, ldm, classifier, clip_tokenizer, c
 
         image_embed = torch.cat(args.batch_size*2*[input_image], dim=0).float()
 
-    elif model_params['image_condition']:
+    elif model_config['image_condition']:
         # using inpaint model but no image is provided
         image_embed = torch.zeros(args.batch_size*2, 4, args.height//8, args.width//8, device=device)
 
