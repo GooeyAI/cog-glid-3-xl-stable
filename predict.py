@@ -64,6 +64,14 @@ class Predictor(BasePredictor):
             description="How many diffusion steps to skip",
             default=0,
         ),
+        width: int = Input(
+            description="Output image width (multiple of 8)",
+            default=512,
+        ),
+        height: int = Input(
+            description="Output image height (multiple of 8)",
+            default=512,
+        ),
     ) -> typing.List[Path]:
 
         if edit_image:
@@ -102,6 +110,10 @@ class Predictor(BasePredictor):
             str(num_outputs),
             "--skip_timesteps",
             str(skip_timesteps),
+            "--width",
+            str(width),
+            "--height",
+            str(height),
         ]
 
         shutil.rmtree("output", ignore_errors=True)
