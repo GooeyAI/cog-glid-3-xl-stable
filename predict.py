@@ -116,6 +116,8 @@ class Predictor(BasePredictor):
             str(height),
         ]
 
+        print("-> args:", " ".join(args))
+
         shutil.rmtree("output", ignore_errors=True)
         shutil.rmtree("output_npy", ignore_errors=True)
 
