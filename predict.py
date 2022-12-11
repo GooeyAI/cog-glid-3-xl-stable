@@ -72,6 +72,10 @@ class Predictor(BasePredictor):
             description="Output image height (multiple of 8)",
             default=512,
         ),
+        seed: int = Input(
+            description="Seed for random number generator. If -1, a random seed will be chosen.",
+            default=-1,
+        ),
     ) -> typing.List[Path]:
 
         if edit_image:
@@ -114,6 +118,8 @@ class Predictor(BasePredictor):
             str(width),
             "--height",
             str(height),
+            "--seed",
+            str(seed),
         ]
 
         print("-> args:", " ".join(args))
